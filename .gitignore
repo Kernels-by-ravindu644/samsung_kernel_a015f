@@ -1,0 +1,7 @@
+/dist
+/out
+*.orig
+*.rej
+*.patch
+*.diff
+*.img
