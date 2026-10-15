@@ -54,7 +54,7 @@ build_kernel(){
     # make "${BUILD_OPTIONS[@]}" clean && make "${BUILD_OPTIONS[@]}" mrproper
     
     # make default configuration.
-    make "${BUILD_OPTIONS[@]}" sdm439_sec_a01q_swa_ins_defconfig custom.config
+    make "${BUILD_OPTIONS[@]}" sdm439_sec_a01q_swa_ins_defconfig custom.config droidspaces.config
 
     # menuconfig
     make "${BUILD_OPTIONS[@]}" menuconfig
