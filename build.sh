@@ -20,6 +20,19 @@ mkdir -p out dist
 export PATH="${HOME}/toolchains/llvm-arm-toolchain-ship/10.0.9/bin:${PATH}"
 export KBUILD_BUILD_USER="@ravindu644"
 BUILD_CROSS_COMPILE="${HOME}/toolchains/aarch64-linux-android-4.9/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-"
+MAGISKBOOT="${KERNEL_ROOT}/prebuilts/magiskboot"
+STOCK_BOOT="${KERNEL_ROOT}/prebuilts/boot.img"
+STOCK_VBMETA="${KERNEL_ROOT}/prebuilts/vbmeta.img"
+
+# generate localversion
+BUILD_VERSION=$(git log -1 --pretty=%h 2>/dev/null)
+if [ -z "$BUILD_VERSION" ]; then
+    export BUILD_VERSION="dev"
+fi
+cat << EOF > "${KERNEL_ROOT}/arch/arm64/configs/version.config"
+CONFIG_LOCALVERSION_AUTO=n
+CONFIG_LOCALVERSION="-ravindu644-${BUILD_VERSION}"
+EOF
 
 # download the toolchains if they aren't there yet
 download_toolchains(){
@@ -47,6 +60,7 @@ BUILD_OPTIONS=(
     CROSS_COMPILE="${BUILD_CROSS_COMPILE}"
     CC=clang
     CLANG_TRIPLE=aarch64-linux-gnu-
+    LOCALVERSION=
 )
 
 build_kernel(){
@@ -54,7 +68,7 @@ build_kernel(){
     # make "${BUILD_OPTIONS[@]}" clean && make "${BUILD_OPTIONS[@]}" mrproper
     
     # make default configuration.
-    make "${BUILD_OPTIONS[@]}" sdm439_sec_a01q_swa_ins_defconfig custom.config droidspaces.config
+    make "${BUILD_OPTIONS[@]}" sdm439_sec_a01q_swa_ins_defconfig version.config custom.config droidspaces.config
 
     # menuconfig
     make "${BUILD_OPTIONS[@]}" menuconfig
@@ -66,5 +80,36 @@ build_kernel(){
     cp "${KERNEL_ROOT}/out/arch/arm64/boot/Image" "${KERNEL_ROOT}/dist/Image"
 }
 
+build_boot(){
+    # unpack stock boot.img, swap in our kernel, repack.
+    # magiskboot re-gzips the raw Image like stock and keeps the stock
+    # dtb, ramdisk, cmdline and os_version/os_patch_level header fields.
+    local work="${KERNEL_ROOT}/dist/boot_work"
+    rm -rf "${work}" && mkdir -p "${work}" && cd "${work}"
+    "${MAGISKBOOT}" unpack "${STOCK_BOOT}"
+    cp "${KERNEL_ROOT}/dist/Image" kernel
+    "${MAGISKBOOT}" repack "${STOCK_BOOT}" "${KERNEL_ROOT}/dist/boot.img"
+    cd "${KERNEL_ROOT}" && rm -rf "${work}"
+}
+
+build_vbmeta(){
+    # must be the stock vbmeta: the bootloader hands its security_patch to
+    # keymaster, and a generic one with an older date breaks FBE key decryption.
+    # only set flags (offset 123) = 0x03: verity + verification disabled.
+    cp "${STOCK_VBMETA}" "${KERNEL_ROOT}/dist/vbmeta.img"
+    printf '\x03' | dd of="${KERNEL_ROOT}/dist/vbmeta.img" bs=1 seek=123 conv=notrunc status=none
+}
+
+build_tar(){
+    # Odin-flashable tar
+    cd "${KERNEL_ROOT}/dist"
+    tar -cvf "SM-A015G-kernel-${BUILD_VERSION}.tar" boot.img vbmeta.img && \
+        echo -e "\n[INFO]: TAR BUILT SUCCESSFULLY..!\n"
+    cd "${KERNEL_ROOT}"
+}
+
 download_toolchains
 build_kernel
+build_boot
+build_vbmeta
+build_tar
