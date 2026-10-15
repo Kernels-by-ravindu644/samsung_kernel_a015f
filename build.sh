@@ -70,8 +70,8 @@ build_kernel(){
     # make default configuration.
     make "${BUILD_OPTIONS[@]}" sdm439_sec_a01q_swa_ins_defconfig version.config custom.config droidspaces.config
 
-    # menuconfig
-    make "${BUILD_OPTIONS[@]}" menuconfig
+    # menuconfig, only when someone is at a terminal (skipped in CI)
+    [ -t 0 ] && make "${BUILD_OPTIONS[@]}" menuconfig
 
     # Build the kernel
     make "${BUILD_OPTIONS[@]}" || exit 1
