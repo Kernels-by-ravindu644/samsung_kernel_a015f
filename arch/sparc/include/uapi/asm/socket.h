@@ -88,6 +88,8 @@
 
 #define SO_COOKIE		0x003b
 
+#define SO_PEERGROUPS		0x003d
+
 #define SO_BINDTOIFINDEX	0x0041
 
 /* Security levels - as per NRL IPv6 - don't actually do anything */
