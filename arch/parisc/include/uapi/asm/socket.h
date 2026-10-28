@@ -91,4 +91,6 @@
 
 #define SO_COOKIE		0x4032
 
+#define SO_BINDTOIFINDEX	0x4037
+
 #endif /* _UAPI_ASM_SOCKET_H */
