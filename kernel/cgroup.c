@@ -3506,6 +3506,13 @@ static int cgroup_events_show(struct seq_file *seq, void *v)
 {
 	seq_printf(seq, "populated %d\n",
 		   cgroup_is_populated(seq_css(seq)->cgroup));
+	/*
+	 * This kernel has no cgroup v2 freezer, so nothing is ever frozen.
+	 * Say so the way 5.2 does: systemd 256 and newer parse this file for
+	 * both keys and drop the whole notification, including the populated
+	 * change it came for, when either is missing.
+	 */
+	seq_puts(seq, "frozen 0\n");
 	return 0;
 }
 
