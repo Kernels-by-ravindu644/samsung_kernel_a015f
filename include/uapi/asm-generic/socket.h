@@ -92,6 +92,8 @@
 
 #define SO_BINDTOIFINDEX	62
 
+#define SO_PEERGROUPS		59
+
 #define SO_CNX_ADVICE		53
 
 #define SO_COOKIE		57

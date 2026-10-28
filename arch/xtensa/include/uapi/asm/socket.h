@@ -103,6 +103,8 @@
 
 #define SO_COOKIE		57
 
+#define SO_PEERGROUPS		59
+
 #define SO_BINDTOIFINDEX	62
 
 #endif	/* _XTENSA_SOCKET_H */
