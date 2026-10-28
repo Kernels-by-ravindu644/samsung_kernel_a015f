@@ -18,6 +18,8 @@
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
 
+#include "mount.h"
+
 void generic_fillattr(struct inode *inode, struct kstat *stat)
 {
 	stat->dev = inode->i_sb->s_dev;
@@ -129,6 +131,134 @@ int vfs_lstat(const char __user *name, struct kstat *stat)
 	return vfs_fstatat(AT_FDCWD, name, stat, AT_SYMLINK_NOFOLLOW);
 }
 EXPORT_SYMBOL(vfs_lstat);
+
+/*
+ * statx() on this kernel answers from the same ->getattr() path that stat()
+ * uses, so it reports STATX_BASIC_STATS, the mount ID and the mount-root and
+ * automount attributes. STATX_BTIME and the per-filesystem attribute bits are
+ * reported as unsupported (their mask bits stay clear), which is also what a
+ * mainline kernel reports for a filesystem that does not implement them.
+ * Changing every filesystem's getattr signature, as v4.11 did, is not needed
+ * for that.
+ */
+struct kstatx {
+	struct kstat	stat;
+	u32		result_mask;
+	u64		attributes;
+	u64		attributes_mask;
+	u64		mnt_id;
+};
+
+static int vfs_statx(int dfd, const char __user *filename, unsigned int flags,
+		     struct kstatx *sx)
+{
+	struct path path;
+	struct inode *inode;
+	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+	int error;
+
+	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+		       AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)) != 0)
+		return -EINVAL;
+
+	if (flags & AT_SYMLINK_NOFOLLOW)
+		lookup_flags &= ~LOOKUP_FOLLOW;
+	if (flags & AT_NO_AUTOMOUNT)
+		lookup_flags &= ~LOOKUP_AUTOMOUNT;
+	if (flags & AT_EMPTY_PATH)
+		lookup_flags |= LOOKUP_EMPTY;
+retry:
+	error = user_path_at(dfd, filename, lookup_flags, &path);
+	if (error)
+		return error;
+
+	memset(sx, 0, sizeof(*sx));
+	error = vfs_getattr(&path, &sx->stat);
+
+	inode = d_backing_inode(path.dentry);
+	sx->result_mask = STATX_BASIC_STATS | STATX_MNT_ID;
+	/* MS_NOATIME means the filesystem supplies a dummy atime value */
+	if (inode->i_sb->s_flags & MS_NOATIME)
+		sx->result_mask &= ~STATX_ATIME;
+	if (IS_AUTOMOUNT(inode))
+		sx->attributes |= STATX_ATTR_AUTOMOUNT;
+	if (path.mnt->mnt_root == path.dentry)
+		sx->attributes |= STATX_ATTR_MOUNT_ROOT;
+	sx->attributes_mask = STATX_ATTR_AUTOMOUNT | STATX_ATTR_MOUNT_ROOT;
+	sx->mnt_id = real_mount(path.mnt)->mnt_id;
+
+	path_put(&path);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+
+static noinline_for_stack int
+cp_statx(const struct kstatx *sx, struct statx __user *buffer)
+{
+	const struct kstat *stat = &sx->stat;
+	struct statx tmp;
+
+	memset(&tmp, 0, sizeof(tmp));
+
+	tmp.stx_mask = sx->result_mask;
+	tmp.stx_blksize = stat->blksize;
+	tmp.stx_attributes = sx->attributes;
+	tmp.stx_nlink = stat->nlink;
+	tmp.stx_uid = from_kuid_munged(current_user_ns(), stat->uid);
+	tmp.stx_gid = from_kgid_munged(current_user_ns(), stat->gid);
+	tmp.stx_mode = stat->mode;
+	tmp.stx_ino = stat->ino;
+	tmp.stx_size = stat->size;
+	tmp.stx_blocks = stat->blocks;
+	tmp.stx_attributes_mask = sx->attributes_mask;
+	tmp.stx_atime.tv_sec = stat->atime.tv_sec;
+	tmp.stx_atime.tv_nsec = stat->atime.tv_nsec;
+	tmp.stx_ctime.tv_sec = stat->ctime.tv_sec;
+	tmp.stx_ctime.tv_nsec = stat->ctime.tv_nsec;
+	tmp.stx_mtime.tv_sec = stat->mtime.tv_sec;
+	tmp.stx_mtime.tv_nsec = stat->mtime.tv_nsec;
+	tmp.stx_rdev_major = MAJOR(stat->rdev);
+	tmp.stx_rdev_minor = MINOR(stat->rdev);
+	tmp.stx_dev_major = MAJOR(stat->dev);
+	tmp.stx_dev_minor = MINOR(stat->dev);
+	tmp.stx_mnt_id = sx->mnt_id;
+
+	return copy_to_user(buffer, &tmp, sizeof(tmp)) ? -EFAULT : 0;
+}
+
+/**
+ * sys_statx - System call to get enhanced stats
+ * @dfd: Base directory to pathwalk from *or* fd to stat.
+ * @filename: File to stat or "" with AT_EMPTY_PATH
+ * @flags: AT_* flags to control pathwalk.
+ * @mask: Parts of statx struct actually required.
+ * @buffer: Result buffer.
+ *
+ * Note that fstat() can be emulated by setting dfd to the fd of interest,
+ * supplying "" as the filename and setting AT_EMPTY_PATH in the flags.
+ */
+SYSCALL_DEFINE5(statx,
+		int, dfd, const char __user *, filename, unsigned, flags,
+		unsigned int, mask,
+		struct statx __user *, buffer)
+{
+	struct kstatx sx;
+	int error;
+
+	if (mask & STATX__RESERVED)
+		return -EINVAL;
+	if ((flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
+		return -EINVAL;
+
+	error = vfs_statx(dfd, filename, flags, &sx);
+	if (error)
+		return error;
+
+	return cp_statx(&sx, buffer);
+}
 
 
 #ifdef __ARCH_WANT_OLD_STAT
