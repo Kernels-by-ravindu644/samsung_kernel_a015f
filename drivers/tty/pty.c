@@ -24,6 +24,9 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/poll.h>
+#include <linux/mount.h>
+#include <linux/file.h>
+#include <linux/ioctl.h>
 
 #undef TTY_DEBUG_HANGUP
 #ifdef TTY_DEBUG_HANGUP
@@ -590,6 +593,56 @@ static inline void legacy_pty_init(void) { }
 #ifdef CONFIG_UNIX98_PTYS
 
 static struct cdev ptmx_cdev;
+
+/**
+ *	ptm_open_peer - open the peer of a pty
+ *	@master: the open struct file of the ptmx device node
+ *	@tty: the master of the pty being opened
+ *	@flags: the flags for open
+ *
+ *	Provide a race free way for userspace to open the slave end of a pty
+ *	(where they have the master fd and cannot access or trust the mount
+ *	namespace /dev/pts was mounted inside).
+ */
+int ptm_open_peer(struct file *master, struct tty_struct *tty, int flags)
+{
+	int fd = -1;
+	struct file *filp;
+	int retval = -EINVAL;
+	struct path path;
+
+	if (tty->driver != ptm_driver)
+		return -EIO;
+
+	fd = get_unused_fd_flags(0);
+	if (fd < 0) {
+		retval = fd;
+		goto err;
+	}
+
+	/* Compute the slave's path */
+	path.mnt = devpts_mntget(master, tty->driver_data);
+	if (IS_ERR(path.mnt)) {
+		retval = PTR_ERR(path.mnt);
+		goto err_put;
+	}
+	path.dentry = tty->link->driver_data;
+
+	filp = dentry_open(&path, flags, current_cred());
+	mntput(path.mnt);
+	if (IS_ERR(filp)) {
+		retval = PTR_ERR(filp);
+		goto err_put;
+	}
+
+	fd_install(fd, filp);
+	return fd;
+
+err_put:
+	put_unused_fd(fd);
+err:
+	return retval;
+}
 
 static int pty_unix98_ioctl(struct tty_struct *tty,
 			    unsigned int cmd, unsigned long arg)
