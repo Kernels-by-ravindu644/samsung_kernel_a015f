@@ -99,4 +99,6 @@
 
 #define SO_COOKIE		57
 
+#define SO_BINDTOIFINDEX	62
+
 #endif /* _UAPI_ASM_SOCKET_H */
