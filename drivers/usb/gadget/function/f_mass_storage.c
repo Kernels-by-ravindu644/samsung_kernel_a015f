@@ -4237,6 +4237,15 @@ static struct config_item_type fsg_func_type = {
 
 #ifdef CONFIG_USB_CONFIGFS_UEVENT
 extern struct device *create_function_device(char *name);
+/*
+ * One /sys/class/android_usb/f_mass_storage for all instances. Android's
+ * framework reads it and makes one instance, and a second instance (a configfs
+ * gadget of our own) cannot register the same name again, so without this the
+ * second mkdir fails with ENODEV. The attributes stay with the instance that
+ * made the device, Android's, until that instance is freed.
+ */
+static DEFINE_MUTEX(fsg_dev_lock);
+static struct device *fsg_android_dev;
 static ssize_t mass_storage_inquiry_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
@@ -4381,27 +4390,56 @@ static int create_mass_storage_device(struct usb_function_instance *fi)
 	struct device_attribute *attr;
 	int err = 0;
 
+	mutex_lock(&fsg_dev_lock);
+	if (fsg_android_dev)
+		goto out;
+
 	dev = create_function_device("f_mass_storage");
 
-	if (IS_ERR(dev))
-		return PTR_ERR(dev);
+	if (IS_ERR(dev)) {
+		err = PTR_ERR(dev);
+		goto out;
+	}
 
 	attrs = mass_storage_function_attributes;
 	if (attrs) {
 		while ((attr = *attrs++) && !err)
 			err = device_create_file(dev, attr);
 		if (err) {
-			device_destroy(dev->class, dev->devt);
-			return -EINVAL;
+			/*
+			 * Not device_destroy(): function devices come from devt
+			 * MKDEV(0, index++) starting at 0, the devt every android%d
+			 * gadget device has, so a lookup by devt can find android0.
+			 */
+			device_unregister(dev);
+			err = -EINVAL;
+			goto out;
 		}
 	}
 	dev_set_drvdata(dev, fi);
-	return 0;
+	fsg_android_dev = dev;
+out:
+	mutex_unlock(&fsg_dev_lock);
+	return err;
+}
+
+static void destroy_mass_storage_device(struct usb_function_instance *fi)
+{
+	mutex_lock(&fsg_dev_lock);
+	if (fsg_android_dev && dev_get_drvdata(fsg_android_dev) == fi) {
+		device_unregister(fsg_android_dev);
+		fsg_android_dev = NULL;
+	}
+	mutex_unlock(&fsg_dev_lock);
 }
 #else
 static int create_mass_storage_device(struct usb_function_instance *fi)
 {
 	return 0;
+}
+
+static void destroy_mass_storage_device(struct usb_function_instance *fi)
+{
 }
 #endif
 
@@ -4410,6 +4448,7 @@ static void fsg_free_inst(struct usb_function_instance *fi)
 	struct fsg_opts *opts;
 
 	opts = fsg_opts_from_func_inst(fi);
+	destroy_mass_storage_device(fi);
 	fsg_common_put(opts->common);
 	kfree(opts);
 }
